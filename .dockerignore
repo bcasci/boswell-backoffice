@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+*.log
+.env
+.DS_Store
+docs/plans
+README.md
+fly.toml
+.tool-versions
