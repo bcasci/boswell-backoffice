@@ -3,7 +3,18 @@
 **Objective:** Replace pedramamini/Maestro with 23blocks-OS/ai-maestro for Claude Code agent orchestration, observability, and human-in-the-loop control.
 
 **Date:** 2026-02-11
-**Status:** In Progress
+**Status:** Blocked - Image Too Large
+
+## ⚠️ Current Blocker
+
+Docker image is **4.1 GB compressed** (~10GB uncompressed), exceeding Fly.io's 8GB limit.
+
+**Root cause:** AI Maestro's npm dependencies are massive (~800MB+ node_modules, ML models, etc.)
+
+**Resolution options:**
+1. Install at runtime instead of build time ← Recommended
+2. Upgrade Fly machine size
+3. Switch to different orchestration tool
 
 ---
 

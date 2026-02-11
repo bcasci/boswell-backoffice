@@ -40,13 +40,8 @@ RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/c
     && dpkg -i cloudflared-linux-amd64.deb \
     && rm cloudflared-linux-amd64.deb
 
-# Install AI Maestro
-RUN git clone https://github.com/23blocks-OS/ai-maestro.git /opt/ai-maestro \
-    && cd /opt/ai-maestro \
-    && npm install -g yarn \
-    && yarn install
-# Note: Skip yarn build during Docker build (requires CUDA libs not available here)
-# Will build at runtime if needed, or run without pre-built help index
+# AI Maestro will be installed at runtime to /data/ai-maestro to keep image small
+# This avoids the 8GB uncompressed image limit on Fly.io
 
 # Create agent user with passwordless sudo
 RUN useradd -m -s /bin/zsh -G sudo agent \

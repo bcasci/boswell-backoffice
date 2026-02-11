@@ -83,11 +83,24 @@ if [ -d "$COMMUNITY_NODE_PATH" ]; then
     fi
 fi
 
-# Start AI Maestro
+# Install and start AI Maestro (runtime installation to keep Docker image small)
+if [ ! -d /data/ai-maestro/.git ]; then
+    echo "First boot: Installing AI Maestro to /data/ai-maestro..."
+    git clone https://github.com/23blocks-OS/ai-maestro.git /data/ai-maestro
+    cd /data/ai-maestro
+    npm install -g yarn
+    yarn install
+    echo "✓ AI Maestro installed"
+else
+    echo "AI Maestro already installed, checking for updates..."
+    cd /data/ai-maestro
+    git pull || echo "Could not update AI Maestro (offline or no changes)"
+fi
+
 echo "Starting AI Maestro..."
-cd /opt/ai-maestro
+cd /data/ai-maestro
 export AI_MAESTRO_DATA=/data/ai-maestro
-# Skip help index build if it fails (not critical for operation)
+# Run in development mode (no pre-build needed)
 yarn dev 2>&1 | grep -v "CUDA" &
 AI_MAESTRO_PID=$!
 
