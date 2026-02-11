@@ -1,0 +1,70 @@
+{
+  "name": "Daily Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "hoursInterval": 24}]
+        },
+        "triggerTimes": {
+          "item": [{"mode": "everyDay", "hour": 8, "minute": 0}]
+        }
+      },
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "issue",
+        "operation": "getAll",
+        "repository": "teamboswell/boswell-hub",
+        "filters": {
+          "state": "open"
+        }
+      },
+      "name": "Get Open Issues",
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "1",
+          "name": "GitHub account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "prompt": "Summarize these GitHub issues in a concise daily digest format:\\n\\n{{$json}}",
+        "model": "claude-sonnet-4-5"
+      },
+      "name": "Claude Code Summarize",
+      "type": "@johnlindquist/n8n-nodes-claudecode.claudeCode",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "text": "Daily Digest:\\n\\n{{$json[\"response\"]}}"
+      },
+      "name": "Format Output",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{"node": "Get Open Issues", "type": "main", "index": 0}]]
+    },
+    "Get Open Issues": {
+      "main": [[{"node": "Claude Code Summarize", "type": "main", "index": 0}]]
+    },
+    "Claude Code Summarize": {
+      "main": [[{"node": "Format Output", "type": "main", "index": 0}]]
+    }
+  }
+}

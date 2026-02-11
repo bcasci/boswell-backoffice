@@ -1,0 +1,54 @@
+{
+  "name": "GitHub Auto-Implementation",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-auto",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"action\"]}}",
+              "value2": "labeled"
+            },
+            {
+              "value1": "={{$json[\"label\"][\"name\"]}}",
+              "value2": "auto"
+            }
+          ]
+        }
+      },
+      "name": "Check for 'auto' label",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "command": "bash /data/repos/maestro-trigger.sh fix-bug {{$json[\"issue\"][\"number\"]}}"
+      },
+      "name": "Trigger Maestro Playbook",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [650, 200]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{"node": "Check for 'auto' label", "type": "main", "index": 0}]]
+    },
+    "Check for 'auto' label": {
+      "main": [[{"node": "Trigger Maestro Playbook", "type": "main", "index": 0}]]
+    }
+  }
+}

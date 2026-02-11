@@ -44,8 +44,9 @@ RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/c
 RUN git clone https://github.com/23blocks-OS/ai-maestro.git /opt/ai-maestro \
     && cd /opt/ai-maestro \
     && npm install -g yarn \
-    && yarn install \
-    && yarn build
+    && yarn install
+# Note: Skip yarn build during Docker build (requires CUDA libs not available here)
+# Will build at runtime if needed, or run without pre-built help index
 
 # Create agent user with passwordless sudo
 RUN useradd -m -s /bin/zsh -G sudo agent \

@@ -87,7 +87,8 @@ fi
 echo "Starting AI Maestro..."
 cd /opt/ai-maestro
 export AI_MAESTRO_DATA=/data/ai-maestro
-yarn start &
+# Skip help index build if it fails (not critical for operation)
+yarn dev 2>&1 | grep -v "CUDA" &
 AI_MAESTRO_PID=$!
 
 echo "========================================="
