@@ -10,7 +10,7 @@ primary_region = 'ewr'
   source = 'backoffice_data'
   destination = '/data'
 
-# n8n service
+# n8n service (primary HTTP service on ports 80/443)
 [http_service]
   internal_port = 5678
   force_https = true
@@ -19,20 +19,24 @@ primary_region = 'ewr'
   min_machines_running = 1
   processes = ['app']
 
-# AI Maestro dashboard
-# NOTE: Initially access via `fly proxy 23000:23000` for security
-# TODO: Configure authentication before exposing publicly
+# AI Maestro dashboard on port 23000
+# Note: Requires dedicated IPv4 for external access on non-standard ports.
+# Allocate with: fly ips allocate-v4 -a backoffice-automation
+# Access via: https://backoffice-automation.fly.dev:23000
+# Or locally: fly proxy 23000:23000 -a backoffice-automation
 [[services]]
   internal_port = 23000
   protocol = 'tcp'
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
 
   [[services.ports]]
     port = 23000
-    handlers = ['http']
+    handlers = ['tls', 'http']
+
+[env]
+  # n8n 2.0+ defaults restrictFileAccessTo to ~/.n8n-files, blocking WriteBinaryFile
+  # on all other paths. Allow /tmp (scratch) and /data (persistent volume).
+  N8N_RESTRICT_FILE_ACCESS_TO = '/tmp;/data'
 
 [[vm]]
   size = 'shared-cpu-1x'
-  memory = '1gb'
+  memory = '2gb'

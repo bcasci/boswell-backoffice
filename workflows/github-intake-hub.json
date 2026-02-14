@@ -1,0 +1,27 @@
+{
+  "name": "GitHub Intake (hub)",
+  "nodes": [
+    {
+      "parameters": {
+        "owner": "teamboswell",
+        "repository": "boswell-hub",
+        "events": [
+          "issues",
+          "issueComment",
+          "pullRequest"
+        ]
+      },
+      "type": "n8n-nodes-base.githubTrigger",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "id": "github-trigger-hub",
+      "name": "GitHub Trigger",
+      "webhookId": "github-intake-hub"
+    }
+  ],
+  "connections": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

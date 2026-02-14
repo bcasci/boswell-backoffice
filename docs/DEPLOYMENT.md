@@ -8,7 +8,7 @@ Complete step-by-step instructions for deploying the autonomous development oper
 - **Region**: ewr (Secaucus, NJ - closest to Boston)
 - **VM Size**: shared-cpu-1x, 1GB RAM
 - **Storage**: 10GB persistent volume at `/data`
-- **Services**: n8n (port 5678), SSH (port 22 → 10022), Maestro (Electron with Xvfb)
+- **Services**: n8n (port 5678), AI Maestro (port 23000)
 
 ---
 
@@ -82,7 +82,7 @@ This will:
 - Build the Docker image (takes 5-10 minutes first time)
 - Deploy to Fly.io
 - Mount the persistent volume
-- Start all services (n8n, Maestro, SSH)
+- Start all services (n8n, AI Maestro)
 
 ### Step 2.3: Verify Deployment
 
@@ -94,10 +94,8 @@ fly status -a backoffice-automation
 fly logs -a backoffice-automation
 
 # Expected log output:
-# - "Starting Xvfb on display :99..."
-# - "Starting SSH server..."
 # - "Starting n8n on port 5678..."
-# - "Starting Maestro..."
+# - "Starting AI Maestro on port 23000..."
 # - "All services started"
 ```
 
@@ -242,48 +240,25 @@ Exit SSH: `exit`
 
 ---
 
-## Phase 5: Maestro Configuration (OPTIONAL)
+## Phase 5: AI Maestro Configuration
 
-### Step 5.1: Access Maestro Remotely
+### Step 5.1: Access AI Maestro Dashboard
 
-Maestro runs on the machine with a web UI. To access it remotely:
+AI Maestro dashboard is accessible at:
+- **Direct**: `https://backoffice-automation.fly.dev:23000` (requires dedicated IPv4)
+- **Local proxy**: `fly proxy 23000:23000 -a backoffice-automation` → `http://localhost:23000`
 
-**Option A: Cloudflare Quick Tunnel (Temporary)**
-
-SSH into machine:
-
+**Note**: Port 23000 requires a dedicated IPv4 address on Fly.io ($2/month). Allocate with:
 ```bash
-fly ssh console -a backoffice-automation
+fly ips allocate-v4 -a backoffice-automation
 ```
 
-Find Maestro's port (check logs or config), then:
+### Step 5.2: Configure AI Maestro Agents
 
-```bash
-cloudflared tunnel --url http://localhost:<maestro-port>
-```
-
-This gives you a temporary public URL.
-
-**Option B: Cloudflare Named Tunnel (Persistent)**
-
-See Cloudflare Tunnel documentation: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/
-
-**Option C: SSH Tunnel**
-
-From your local machine:
-
-```bash
-fly proxy <local-port>:<maestro-remote-port> -a backoffice-automation
-```
-
-Then access at `http://localhost:<local-port>`
-
-### Step 5.2: Configure Maestro Agents
-
-In Maestro UI:
+In AI Maestro dashboard:
 1. Create agents pointing to `/data/repos/boswell-hub` and `/data/repos/boswell-app`
-2. Import playbooks from `/playbooks/`
-3. Test a simple playbook execution
+2. Configure Claude Code as the AI agent backend
+3. Test agent communication
 
 ---
 
@@ -295,7 +270,7 @@ In Maestro UI:
 | SSH          | `fly ssh console -a backoffice-automation`           |
 | Logs         | `fly logs -a backoffice-automation`                  |
 | Status       | `fly status -a backoffice-automation`                |
-| Maestro UI   | Via Cloudflare tunnel or SSH tunnel                  |
+| AI Maestro   | https://backoffice-automation.fly.dev:23000 or `fly proxy 23000:23000` |
 | Volume       | `fly volumes list -a backoffice-automation`          |
 
 ---
@@ -352,17 +327,18 @@ gh auth status
 # fly apps restart backoffice-automation
 ```
 
-### Issue: Maestro not starting
+### Issue: AI Maestro not starting
 
 ```bash
-# Check if Xvfb is running
-ps aux | grep Xvfb
+# Check if AI Maestro process is running
+fly ssh console -a backoffice-automation
+ps aux | grep server.mjs
 
-# Check Maestro logs
+# Check AI Maestro logs
 fly logs -a backoffice-automation | grep -i maestro
 
-# Maestro may fail on headless Linux - this is expected
-# Fallback: Use direct `claude -p` commands from n8n instead
+# Restart the app
+fly apps restart backoffice-automation
 ```
 
 ### Issue: Volume full
@@ -384,7 +360,7 @@ fly volumes extend backoffice_data -s 20 -a backoffice-automation
 | ---------------------------------------- | ------------ |
 | Fly.io shared-cpu-1x + 10GB volume       | ~$15-20      |
 | Claude Code (Max subscription)           | $0 (included)|
-| n8n, Maestro, CCPM (open source)         | $0           |
+| n8n, AI Maestro (open source)            | $0           |
 | **Total**                                | **~$15-20**  |
 
 *Note: Costs may vary. Check Fly.io pricing for latest rates.*
@@ -396,7 +372,7 @@ fly volumes extend backoffice_data -s 20 -a backoffice-automation
 1. **Test the system**:
    - Create a test GitHub issue labeled "auto"
    - Verify n8n webhook triggers
-   - Check if Maestro executes playbook
+   - Check if AI Maestro orchestrates the agent
 
 2. **Configure webhooks**:
    - GitHub: Repository Settings → Webhooks
@@ -434,11 +410,12 @@ SSH in and run:
 npm update -g n8n @anthropic-ai/claude-code
 ```
 
-### Updating Maestro
+### Updating AI Maestro
 
-1. Download new AppImage from GitHub releases
-2. SSH in and replace in `/usr/local/bin/`
-3. Restart app
+AI Maestro is built into the Docker image. To update:
+
+1. Rebuild and redeploy: `fly deploy -a backoffice-automation`
+2. The Dockerfile will pull the latest AI Maestro from GitHub
 
 ### Backup
 
@@ -455,7 +432,7 @@ fly volumes snapshots create backoffice_data -a backoffice-automation
 
 - **Fly.io Docs**: https://fly.io/docs/
 - **n8n Docs**: https://docs.n8n.io/
-- **Maestro Docs**: https://docs.runmaestro.ai/
+- **AI Maestro**: https://github.com/23blocks-OS/ai-maestro
 - **CCPM Docs**: https://github.com/automazeio/ccpm
 - **Claude Code Docs**: https://code.claude.com/docs/
 
