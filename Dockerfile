@@ -17,6 +17,11 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     jq \
     unzip \
+    # Ruby build dependencies (for compiling Ruby via asdf)
+    libssl-dev libreadline-dev zlib1g-dev libyaml-dev libffi-dev \
+    libgdbm-dev libncurses5-dev autoconf bison libsqlite3-dev \
+    # Rails app runtime dependencies
+    libvips-dev libjemalloc2 pkg-config libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 22.x
@@ -24,8 +29,17 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install global npm packages
-RUN npm install -g n8n @anthropic-ai/claude-code yarn
+# Version manifest — single source of truth for pinned dependencies
+COPY versions.json /tmp/versions.json
+
+# Install global npm packages (versions read from versions.json)
+RUN CLAUDE_CODE_VERSION=$(jq -r '.["claude-code"]' /tmp/versions.json) \
+    && N8N_VERSION=$(jq -r '.n8n' /tmp/versions.json) \
+    && echo "Installing claude-code@${CLAUDE_CODE_VERSION}, n8n@${N8N_VERSION}" \
+    && npm install -g \
+        "n8n@${N8N_VERSION}" \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        yarn
 
 # Install GitHub CLI
 RUN mkdir -p /etc/apt/keyrings \
@@ -76,6 +90,9 @@ RUN git clone --depth 1 https://github.com/23blocks-OS/ai-maestro.git /opt/ai-ma
     && yarn cache clean 2>/dev/null || true \
     && rm -rf /tmp/* /root/.npm /root/.cache
 
+# Install asdf version manager (plugins + installs live on /data/asdf persistent volume)
+RUN git clone --depth 1 https://github.com/asdf-vm/asdf.git /opt/asdf --branch v0.16.7
+
 # Create agent user with passwordless sudo
 RUN useradd -m -s /bin/zsh -G sudo agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
@@ -94,9 +111,10 @@ RUN mkdir -p /run/sshd \
     && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Create data directories (persistent volume mounted at /data)
-RUN mkdir -p /data/n8n /data/ai-maestro /data/repos /data/worktrees \
+RUN mkdir -p /data/n8n /data/ai-maestro /data/repos /data/worktrees /data/asdf \
     && chown -R agent:agent /data \
-    && chown -R agent:agent /opt/ai-maestro
+    && chown -R agent:agent /opt/ai-maestro \
+    && chown -R agent:agent /opt/asdf
 
 # Switch to agent user
 USER agent

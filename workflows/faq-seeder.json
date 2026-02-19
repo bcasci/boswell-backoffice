@@ -1,12 +1,18 @@
 {
   "name": "FAQ Seeder",
+  "description": null,
+  "active": false,
+  "isArchived": false,
   "nodes": [
     {
       "parameters": {},
       "name": "Start",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [
+        250,
+        300
+      ]
     },
     {
       "parameters": {
@@ -18,7 +24,10 @@
       "name": "Get Customer Emails",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2,
-      "position": [470, 300],
+      "position": [
+        470,
+        300
+      ],
       "credentials": {
         "gmailOAuth2": {
           "id": "Z7taNf2u8kOLS1tz",
@@ -34,7 +43,10 @@
       "name": "Convert to JSON File",
       "type": "n8n-nodes-base.convertToFile",
       "typeVersion": 1.1,
-      "position": [690, 300]
+      "position": [
+        690,
+        300
+      ]
     },
     {
       "parameters": {
@@ -45,37 +57,71 @@
       "name": "Save to Disk",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [910, 300]
+      "position": [
+        910,
+        300
+      ]
     },
     {
       "parameters": {
-        "command": "su - agent -c 'claude -p --dangerously-skip-permissions \"Read /tmp/emails.json. It contains ~200 Gmail API email objects (JSON array). Each has a payload with headers (Subject, From, To, Date) and body in payload.parts[].body.data (base64url encoded). Process them in batches of 15. For each batch: decode the base64 body content, ignore spam/marketing/newsletters/cold outreach, focus only on real conversations between Brandon and customers, then append new FAQ entries to /data/customer-faq.md. Format each entry as: ## Category heading, then **Q:** question, then **A:** answer based on how Brandon actually responded. Before each batch, read the existing FAQ file to avoid duplicates. Work through ALL emails systematically. After each batch, briefly report which emails you processed and how many FAQ entries you added.\"'"
+        "command": "su - agent -c 'claude -p --dangerously-skip-permissions \"Read /tmp/emails.json which contains raw Gmail API output (JSON array). Each email has a payload object with headers (Subject, From, To, Date) and body parts in payload.parts[].body.data (base64url encoded). Decode the bodies to read the actual email content. Analyze ALL the emails carefully. Ignore marketing, spam, newsletters, and cold outreach. Focus ONLY on real conversations between Brandon and customers. Extract recurring questions and issues from the full email bodies. Write a comprehensive FAQ to /data/customer-faq.md grouped by ## Category headings with **Q:** and **A:** entries. Base answers on how Brandon actually responded in the emails. Reply with only a short summary of what you created.\"'"
       },
       "name": "Build FAQ with Claude",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [1130, 300]
+      "position": [
+        1130,
+        300
+      ]
     }
   ],
   "connections": {
     "Start": {
-      "main": [[{"node": "Get Customer Emails", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Get Customer Emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Get Customer Emails": {
-      "main": [[{"node": "Convert to JSON File", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Convert to JSON File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Convert to JSON File": {
-      "main": [[{"node": "Save to Disk", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Save to Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Save to Disk": {
-      "main": [[{"node": "Build FAQ with Claude", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "Build FAQ with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
     "executionOrder": "v1"
-  },
-  "staticData": null,
-  "tags": [],
-  "pinData": {},
-  "versionId": "11"
+  }
 }

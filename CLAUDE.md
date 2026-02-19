@@ -32,7 +32,7 @@ Secrets are set via `fly secrets set KEY=value -a backoffice-automation`. Requir
 Dockerfile          → builds image: Ubuntu 24.04 + n8n + Claude Code + AI Maestro + Caddy + oauth2-proxy
 entrypoint.sh       → starts all 3 services, manages symlinks, seeds config, fixes agent registry
 fly.toml            → Fly.io config, ports, env vars, VM size
-workflows/*.json    → n8n workflow definitions (seeded on first boot)
+workflows/*.json    → n8n workflow definitions (seeded on first boot, see workflows/CLAUDE.md for editing procedures)
 scripts/            → helper scripts baked into image at /opt/scripts/
 docs/plans/         → deployment plan and progress log
 ```
@@ -74,7 +74,7 @@ PATCH  /api/agents/{id}/session       → send command (409 if busy)
 
 **n8n file access is restricted.** n8n 2.0+ defaults `N8N_RESTRICT_FILE_ACCESS_TO=~/.n8n-files`. We set it to `/tmp;/data` in `fly.toml` `[env]`. Semicolon-separated (colons don't work).
 
-**n8n CLI import doesn't update running server.** `n8n import:workflow` writes to SQLite only. The running server caches workflows in memory. New workflows appear on list refresh; updates to existing workflows don't. Restart n8n or use the REST API.
+**n8n CLI import doesn't update running server.** `n8n import:workflow` writes to SQLite only and does NOT publish — the running server ignores it. Do not use CLI import for updates. Instead, modify the DB directly with python3 + sqlite3 (update BOTH `workflow_entity` and `workflow_history`), then restart n8n. See `workflows/CLAUDE.md` for the full procedure and code template.
 
 **Agent registry tags can't be updated via API.** PUT/PATCH on `/api/agents/{id}` doesn't reliably update tags. Edit `/data/ai-maestro/agents/registry.json` directly.
 

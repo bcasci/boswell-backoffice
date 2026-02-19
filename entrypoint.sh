@@ -34,7 +34,7 @@ SELF_HOST_ID=$(hostname)
 
 setup_data_directories() {
     echo "Setting up data directories..."
-    sudo mkdir -p /data/n8n /data/ai-maestro /data/repos /data/worktrees /data/agents \
+    sudo mkdir -p /data/n8n /data/ai-maestro /data/repos /data/agents \
         /data/queue/boswell-hub-manager /data/queue/boswell-app-manager
     sudo chown -R agent:agent /data
 
@@ -90,6 +90,101 @@ with open(path, 'w') as f:
 "
     done
     chown agent:agent /home/agent/.claude.json
+}
+
+setup_claude_plugins() {
+    # Install ralph-wiggum plugin for autonomous agent loops.
+    # Checks if already installed by looking in the user settings file.
+    # The plugin is from the anthropics/claude-code demo marketplace.
+    local settings="/data/claude/settings.json"
+    if [ -f "$settings" ] && grep -q "ralph-wiggum" "$settings" 2>/dev/null; then
+        echo "OK: ralph-wiggum plugin already installed"
+    else
+        echo "Installing ralph-wiggum plugin..."
+        su - agent -c "claude plugin marketplace add anthropics/claude-code" 2>&1 || true
+        su - agent -c "claude plugin install ralph-wiggum@claude-code-plugins --scope user" 2>&1 || true
+        if grep -q "ralph-wiggum" "$settings" 2>/dev/null; then
+            echo "OK: ralph-wiggum plugin installed"
+        else
+            echo "WARNING: ralph-wiggum plugin install may have failed — verify manually"
+        fi
+    fi
+}
+
+# =============================================================================
+# asdf Version Manager
+# =============================================================================
+
+setup_asdf() {
+    echo "Setting up asdf..."
+    mkdir -p /data/asdf
+    chown agent:agent /data/asdf
+
+    # Install ruby plugin if missing (plugins live in ASDF_DATA_DIR on persistent volume)
+    if [ ! -d /data/asdf/plugins/ruby ]; then
+        echo "Installing asdf ruby plugin..."
+        su - agent -c "ASDF_DIR=/opt/asdf ASDF_DATA_DIR=/data/asdf /opt/asdf/bin/asdf plugin add ruby" 2>&1 || true
+    fi
+    echo "OK: asdf configured (ASDF_DATA_DIR=/data/asdf)"
+}
+
+bootstrap_ruby_for_repos() {
+    # Background task: auto-install Ruby versions and bundle gems for each repo.
+    # Reads .tool-versions from each repo to determine required Ruby version.
+    # Idempotent — skips if Ruby version already installed and bundle is satisfied.
+    echo "RUBY: Starting background Ruby bootstrap..."
+
+    for agent_dir in /data/agents/*/repo; do
+        [ -d "$agent_dir" ] || continue
+        local agent_name
+        agent_name=$(basename "$(dirname "$agent_dir")")
+
+        # Read ruby version from .tool-versions
+        if [ ! -f "$agent_dir/.tool-versions" ]; then
+            echo "RUBY: $agent_name — no .tool-versions, skipping"
+            continue
+        fi
+        local ruby_version
+        ruby_version=$(grep '^ruby ' "$agent_dir/.tool-versions" 2>/dev/null | awk '{print $2}')
+        if [ -z "$ruby_version" ]; then
+            echo "RUBY: $agent_name — no ruby in .tool-versions, skipping"
+            continue
+        fi
+
+        # Install Ruby if not already present (check for actual binary, not just directory)
+        if [ -x "/data/asdf/installs/ruby/$ruby_version/bin/ruby" ]; then
+            echo "RUBY: $agent_name — ruby $ruby_version already installed, skipping"
+        else
+            # Clean up any partial install
+            rm -rf "/data/asdf/installs/ruby/$ruby_version"
+            echo "RUBY: $agent_name — installing ruby $ruby_version (this may take 10-20 min)..."
+            su - agent -c "ASDF_DIR=/opt/asdf ASDF_DATA_DIR=/data/asdf MAKE_OPTS='-j1' /opt/asdf/bin/asdf install ruby $ruby_version" 2>&1 | \
+                while IFS= read -r line; do echo "RUBY: $line"; done
+            if [ -x "/data/asdf/installs/ruby/$ruby_version/bin/ruby" ]; then
+                echo "RUBY: $agent_name — ruby $ruby_version installed successfully"
+            else
+                echo "RUBY: $agent_name — ruby $ruby_version install FAILED"
+                continue
+            fi
+        fi
+
+        # Ensure shims and global version are set
+        su - agent -c "ASDF_DIR=/opt/asdf ASDF_DATA_DIR=/data/asdf /opt/asdf/bin/asdf reshim ruby $ruby_version" 2>/dev/null || true
+        su - agent -c "ASDF_DIR=/opt/asdf ASDF_DATA_DIR=/data/asdf /opt/asdf/bin/asdf global ruby $ruby_version" 2>/dev/null || true
+
+        # Bundle install if needed
+        echo "BUNDLE: $agent_name — checking bundle..."
+        if su - agent -c "cd $agent_dir && bundle check" >/dev/null 2>&1; then
+            echo "BUNDLE: $agent_name — bundle satisfied, skipping"
+        else
+            echo "BUNDLE: $agent_name — running bundle install..."
+            su - agent -c "cd $agent_dir && gem install bundler && bundle install" 2>&1 | \
+                while IFS= read -r line; do echo "BUNDLE: $line"; done
+            echo "BUNDLE: $agent_name — bundle install complete"
+        fi
+    done
+
+    echo "RUBY: Background bootstrap complete"
 }
 
 # =============================================================================
@@ -162,6 +257,53 @@ except Exception:
     pass
 " 2>/dev/null || true
     fi
+
+    # Directory layout per agent:
+    #   /data/agents/<name>/repo/      ← git clone (main branch, spec work, worktree source)
+    #   /data/agents/<name>/issues/    ← git worktrees (one per issue)
+    #
+    # AI Maestro workingDirectory points to repo/ so Claude Code starts with
+    # full project context (.claude/ commands). Dispatcher cd's to worktrees.
+
+    # Migrate legacy layout: if repo was cloned at agent root, move to repo/ subdir
+    migrate_repo_to_subdir() {
+        local agent_root="$1"
+        if [ -d "$agent_root/.git" ] && [ ! -d "$agent_root/repo" ]; then
+            echo "Migrating $agent_root to repo/ subdirectory layout..."
+            local tmp_dir="/tmp/repo-migrate-$$"
+            mv "$agent_root" "$tmp_dir"
+            mkdir -p "$agent_root"
+            mv "$tmp_dir" "$agent_root/repo"
+            chown -R agent:agent "$agent_root"
+            echo "OK: Migrated $agent_root → $agent_root/repo/"
+        fi
+    }
+
+    migrate_repo_to_subdir "/data/agents/boswell-hub-manager"
+    migrate_repo_to_subdir "/data/agents/boswell-app-manager"
+
+    # Clone repos into agent repo/ directories if not already present.
+    # Runs as agent user so git config and file ownership are correct.
+    clone_repo_if_missing() {
+        local repo_url="$1"
+        local agent_root="$2"
+        local target_dir="$agent_root/repo"
+        mkdir -p "$agent_root"
+        if [ ! -d "$target_dir/.git" ]; then
+            echo "Cloning $repo_url into $target_dir..."
+            su - agent -c "git clone https://x-access-token:${GH_TOKEN}@github.com/${repo_url}.git $target_dir" 2>&1
+            echo "OK: Cloned $repo_url"
+        else
+            echo "OK: $target_dir already has repo"
+        fi
+    }
+
+    clone_repo_if_missing "teamboswell/boswell-hub" "/data/agents/boswell-hub-manager"
+    clone_repo_if_missing "teamboswell/boswell-app" "/data/agents/boswell-app-manager"
+
+    # Create issues/ directories for worktrees
+    mkdir -p /data/agents/boswell-hub-manager/issues /data/agents/boswell-app-manager/issues
+    chown -R agent:agent /data/agents/
 }
 
 fix_agent_registry() {
@@ -170,6 +312,7 @@ fix_agent_registry() {
     #   2. Ensure all agents have --dangerously-skip-permissions in programArgs
     #      (AI Maestro's wake route appends programArgs to the claude command)
     #   3. Remove old --permission-mode bypassPermissions (replaced by above)
+    #   4. Fix workingDirectory to point to repo/ subdirectory (worktree layout)
     if [ -f /data/ai-maestro/agents/registry.json ]; then
         python3 -c "
 import json, sys
@@ -192,10 +335,15 @@ try:
         if '--dangerously-skip-permissions' not in args:
             agent['programArgs'] = (args + ' --dangerously-skip-permissions').strip()
             changed = True
+        # Fix workingDirectory to point to repo/ subdirectory
+        wd = agent.get('workingDirectory', '')
+        if wd.startswith('/data/agents/') and not wd.endswith('/repo'):
+            agent['workingDirectory'] = wd.rstrip('/') + '/repo'
+            changed = True
     if changed:
         with open('/data/ai-maestro/agents/registry.json', 'w') as f:
             json.dump(agents, f, indent=2)
-        print('Updated agent registry (hostUrl + programArgs)')
+        print('Updated agent registry (hostUrl + programArgs + workingDirectory)')
 except Exception as e:
     print(f'Warning: could not fix agent registry: {e}', file=sys.stderr)
 " 2>/dev/null || true
@@ -213,6 +361,16 @@ setup_agent_secrets() {
     cat > /home/agent/.zshenv <<EOF
 export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
 export GH_TOKEN="$GH_TOKEN"
+
+# asdf version manager (Ruby, Node.js, etc.)
+# PATH-only setup avoids sourcing asdf.sh which prints a noisy v0.16 migration notice.
+# Shims handle version switching via .tool-versions automatically.
+export ASDF_DIR=/opt/asdf
+export ASDF_DATA_DIR=/data/asdf
+export PATH="\$ASDF_DATA_DIR/shims:\$ASDF_DIR/bin:\$PATH"
+
+# Use jemalloc for Ruby (better memory usage on constrained VPS)
+export LD_PRELOAD=libjemalloc.so.2
 EOF
     chown agent:agent /home/agent/.zshenv
     chmod 600 /home/agent/.zshenv
@@ -397,6 +555,8 @@ main() {
     # Phase 1: Configure persistent storage and symlinks
     setup_data_directories
     setup_claude_config
+    setup_claude_plugins
+    setup_asdf
     setup_ai_maestro_data
     setup_ai_maestro_hosts
     setup_agent_working_directories
@@ -410,6 +570,9 @@ main() {
     start_n8n
     start_ai_maestro
     start_auth_proxy
+
+    # Phase 4: Background tasks (non-blocking)
+    bootstrap_ruby_for_repos &
 
     # Summary
     echo "========================================="
