@@ -1,27 +1,36 @@
 # n8n Workflows
 
-Workflow JSON files baked into the Docker image at `/opt/workflows/` and imported into n8n on first boot. Flag file `/data/n8n/.workflows-seeded` prevents re-import on subsequent deploys.
+Workflow JSON files baked into the Docker image at `/opt/workflows/` and synced with the n8n database on every deploy via `sync_workflows()` in entrypoint.sh. First boot seeds workflows; subsequent deploys update nodes/connections by hash comparison.
 
 ## Current Workflows
 
 ### github-intake-hub-v2.json
 
-GitHub Trigger → Code "Process Event" → Execute Command "Handle Event". Receives webhook events from `teamboswell/boswell-hub`, gates on `agent-*` labels and `@agent` comments, writes job files to `/data/queue/boswell-hub-manager/`. Also handles PR merge → worktree cleanup.
+GitHub Trigger → Code "Process Event" → Execute Command "Handle Event". Receives webhook events from `teamboswell/boswell-hub`, gates on `agent-*` labels and `@agent` comments, constructs a prompt for `claude -p`, base64-encodes it, and enqueues the `agent-dispatch` DAG via the Dagu v2 API (`POST /api/v2/dags/agent-dispatch/enqueue`). Also handles PR merge → workspace cleanup.
 
 ### github-intake-app-v2.json
 
-Same architecture as hub intake, targeting `teamboswell/boswell-app` → `/data/queue/boswell-app-manager/`.
-
-### agent-dispatcher.json
-
-Schedule Trigger (60s) → Execute Command "Dispatch Work". Two phases per cycle:
-
-1. **Completion check**: For each agent with a `.active` file, checks if agent is idle via `tmux capture-pane`. If idle → PATCHes the GitHub comment to "Complete" with duration, deletes `.active`. If busy >2h → warns "may be stuck".
-2. **Dispatch**: Polls both agent queues, reads oldest job file (FIFO), does git fetch, creates per-issue clone if needed (local `git clone` from repo/, sets remote to GitHub URL, creates `issue/{N}/work` branch), sets agent's `workingDirectory` via AI Maestro PATCH API, wakes agent, dispatches command (with extra Enter for reliability), deletes job file on success, POSTs a start comment on the GitHub issue, writes `.active` state file. On completion, resets `workingDirectory` to default.
+Same architecture as hub intake, targeting `teamboswell/boswell-app` → `boswell-app-manager` agent.
 
 ### faq-seeder.json
 
 Gmail → ConvertToFile → WriteToDisk → Execute Command (Claude). Fetches customer emails, processes in batches of 15, extracts FAQ entries to `/data/customer-faq.md`.
+
+## Dagu Integration
+
+n8n intake workflows call the Dagu v2 API to enqueue agent work:
+
+```bash
+curl -s -X POST "http://localhost:8080/api/v2/dags/agent-dispatch/enqueue" \
+  -H "Content-Type: application/json" \
+  -d '{"params": "AGENT_NAME=boswell-app-manager REPO=teamboswell/boswell-app ISSUE_NUM=42 ACTION=spec NEEDS_WORKTREE=false MESSAGE_B64=<base64>"}'
+```
+
+**Key points:**
+- Params are space-separated `KEY=value` pairs (NOT JSON)
+- MESSAGE is base64-encoded to avoid space/quote issues in Dagu params
+- Use `/enqueue` (NOT `/start`) to respect the `agent-work` queue (max_concurrency=1)
+- `/start` bypasses the queue and runs immediately
 
 ## Fresh Deploy / Rebuild
 
@@ -31,10 +40,10 @@ Workflow JSONs are seeded automatically from the Docker image on first boot. Cre
 
 | Secret | Purpose |
 |--------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code auth for AI Maestro agents |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code auth for agent subprocesses |
 | `GH_TOKEN` | GitHub access — needs `repo` + `admin:repo_hook` scopes |
-| `GITHUB_OAUTH_CLIENT_ID` | OAuth app for AI Maestro dashboard auth |
-| `GITHUB_OAUTH_CLIENT_SECRET` | OAuth app secret |
+| `CADDY_AUTH_PASS` | Basic auth password for Dagu dashboard |
+| `BOSWELL_HUB_MASTER_KEY` | Rails master key for boswell-hub |
 
 ### n8n Credentials (manual setup after fresh deploy)
 
@@ -94,8 +103,8 @@ Instead, modify the DB directly with python3 + sqlite3. This is the only program
 import sqlite3, json
 
 DB = "/data/n8n/.n8n/database.sqlite"
-WORKFLOW_NAME = "Agent Dispatcher"  # find by name
-NODE_NAME = "Dispatch Work"         # node to modify
+WORKFLOW_NAME = "GitHub Intake (hub) v2"  # find by name
+NODE_NAME = "Process Event"               # node to modify
 
 conn = sqlite3.connect(DB)
 cur = conn.cursor()
@@ -106,7 +115,7 @@ wf_id, nodes_json = cur.fetchone()
 nodes = json.loads(nodes_json)
 for node in nodes:
     if node.get("name") == NODE_NAME:
-        node["parameters"]["command"] = new_script  # or modify jsCode, etc.
+        node["parameters"]["jsCode"] = new_code  # or modify command, etc.
         break
 cur.execute("UPDATE workflow_entity SET nodes = ? WHERE id = ?",
             (json.dumps(nodes), wf_id))
@@ -117,7 +126,7 @@ for vid, hist_json in cur.fetchall():
     hist_nodes = json.loads(hist_json)
     for node in hist_nodes:
         if node.get("name") == NODE_NAME:
-            node["parameters"]["command"] = new_script
+            node["parameters"]["jsCode"] = new_code
             break
     cur.execute("UPDATE workflow_history SET nodes = ? WHERE versionId = ?",
                 (json.dumps(hist_nodes), vid))
@@ -132,16 +141,6 @@ conn.close()
 3. Run: `fly ssh console -a backoffice-automation -C "python3 /tmp/deploy-foo.py"`
 4. Restart: `fly apps restart backoffice-automation`
 5. Webhook registrations survive restarts — no need to re-activate
-
-**For string replacements** (simpler when changing a specific value across the workflow):
-```python
-cur.execute("SELECT id, nodes FROM workflow_entity WHERE name = ?", (name,))
-wf_id, nodes_json = cur.fetchone()
-if OLD_TEXT in nodes_json:
-    cur.execute("UPDATE workflow_entity SET nodes = ? WHERE id = ?",
-                (nodes_json.replace(OLD_TEXT, NEW_TEXT), wf_id))
-# ... same for workflow_history ...
-```
 
 **Key facts:**
 - `workflow_history` uses `versionId` as primary key (NOT `id`)
