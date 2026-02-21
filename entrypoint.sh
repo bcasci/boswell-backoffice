@@ -298,12 +298,15 @@ setup_agent_working_directories() {
 
 setup_agent_secrets() {
     # Make secrets available to the agent user's shell sessions.
-    # AI Maestro runs as agent, so tmux sessions inherit these.
+    # Dagu runs as agent, so claude -p subprocesses inherit these.
     # Claude Code and gh CLI read these from the environment.
     cat > /home/agent/.zshenv <<EOF
 export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
 export GH_TOKEN="$GH_TOKEN"
 export BOSWELL_HUB_MASTER_KEY="$BOSWELL_HUB_MASTER_KEY"
+
+# Dagu data directory (queue, logs, execution history)
+export DAGU_HOME=/data/dagu
 
 # asdf version manager (Ruby, Node.js, etc.)
 # PATH-only setup avoids sourcing asdf.sh which prints a noisy v0.16 migration notice.
@@ -506,7 +509,13 @@ start_dagu() {
 
     (
         while true; do
-            su - agent -c "dagu start-all --config /data/dagu/config.yaml" 2>&1 | tee -a /data/dagu/logs/dagu.log
+            # DAGU_HOME controls data/log/queue paths. --dags overrides DAG directory.
+            # --config loads our auth/queue settings. All three are needed.
+            su - agent -c "DAGU_HOME=/data/dagu dagu start-all \
+                --config /data/dagu/config.yaml \
+                --dags /data/dagu/dags \
+                --host 127.0.0.1 \
+                --port 8080" 2>&1 | tee -a /data/dagu/logs/dagu.log
             echo "Dagu exited ($(date)), restarting in 5s..."
             sleep 5
         done
