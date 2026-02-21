@@ -1,0 +1,44 @@
+name: agent-dispatch
+description: "Set up workspace and run claude -p for a GitHub issue"
+type: chain
+
+params:
+  AGENT_NAME: ""
+  REPO: ""
+  ISSUE_NUM: "0"
+  ACTION: ""
+  MESSAGE_B64: ""
+  NEEDS_WORKTREE: "false"
+
+queue: "agent-work"
+
+env:
+  GH_TOKEN: "${GH_TOKEN}"
+  CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN}"
+  BOSWELL_HUB_MASTER_KEY: "${BOSWELL_HUB_MASTER_KEY}"
+  ASDF_DIR: "/opt/asdf"
+  ASDF_DATA_DIR: "/data/asdf"
+  PATH: "/data/asdf/shims:/opt/asdf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  LD_PRELOAD: "libjemalloc.so.2"
+
+timeoutSec: 7200
+
+steps:
+  - name: post-start-comment
+    command: python3 /opt/dagu/scripts/post-start-comment.py
+
+  - name: setup-workspace
+    command: bash /opt/dagu/scripts/setup-workspace.sh
+
+  - name: run-claude
+    command: bash /opt/dagu/scripts/run-claude.sh
+    timeoutSec: 3600
+
+  - name: post-completion-comment
+    command: python3 /opt/dagu/scripts/post-completion-comment.py
+    continueOn:
+      failure: true
+
+handlerOn:
+  failure:
+    command: python3 /opt/dagu/scripts/post-failure-comment.py

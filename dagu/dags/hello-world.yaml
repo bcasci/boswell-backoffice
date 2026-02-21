@@ -1,0 +1,16 @@
+name: hello-world
+description: "Smoke test - verifies Dagu is running and can access agent env"
+
+steps:
+  - name: greet
+    command: echo "Hello from Dagu on $(hostname) at $(date)"
+
+  - name: check-env
+    command: |
+      echo "GH_TOKEN set: $([ -n "$GH_TOKEN" ] && echo yes || echo no)"
+      echo "CLAUDE_CODE_OAUTH_TOKEN set: $([ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo yes || echo no)"
+      echo "Working dir: $(pwd)"
+      echo "User: $(whoami)"
+      echo "claude location: $(which claude 2>/dev/null || echo 'not found')"
+      echo "gh location: $(which gh 2>/dev/null || echo 'not found')"
+      echo "git location: $(which git 2>/dev/null || echo 'not found')"

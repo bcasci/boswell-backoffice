@@ -4,32 +4,26 @@ set -e
 # =============================================================================
 # Backoffice Automation Entrypoint
 # =============================================================================
-# Starts n8n, AI Maestro, Caddy auth proxy, PostgreSQL, and Redis.
+# Starts n8n, Dagu, Caddy auth proxy, PostgreSQL, and Redis.
 #
 # Services:
-#   - n8n          → port 5678  (workflow automation)
-#   - AI Maestro   → port 23001 (internal, agent orchestration dashboard)
-#   - Caddy        → port 23000 (auth proxy for AI Maestro)
+#   - n8n          → port 5678  (workflow automation, webhook intake)
+#   - Dagu         → port 8080  (internal, agent orchestration + web UI)
+#   - Caddy        → port 23000 (auth proxy for Dagu dashboard)
 #   - PostgreSQL   → socket    (boswell-hub database)
 #   - Redis        → port 6379 (Sidekiq job queue)
 #
-# AI Maestro runs as the 'agent' user (not root). This is critical because:
-#   - AI Maestro creates tmux sessions that inherit the calling user
-#   - Claude Code's --dangerously-skip-permissions is blocked for root
-#   - Running as 'agent' means tmux sessions + Claude Code run as non-root
-#   - This matches AI Maestro's own agent-container pattern (non-root user)
+# Dagu runs as the 'agent' user so claude -p subprocesses inherit the
+# correct environment (CLAUDE_CODE_OAUTH_TOKEN, GH_TOKEN, asdf paths).
 #
 # Persistent volume: /data (survives deploys)
 #   /data/n8n          - n8n workflows and settings
-#   /data/ai-maestro   - AI Maestro config (agents, hosts, teams)
+#   /data/dagu         - Dagu config, DAGs, logs, execution history
 #   /data/claude       - Claude Code auth and settings
 #   /data/agents       - Agent working directories
 #   /data/repos        - Cloned repositories
 #   /data/postgres     - PostgreSQL data directory
 # =============================================================================
-
-MAESTRO_PUBLIC_URL="${MAESTRO_PUBLIC_URL:-https://backoffice-automation.fly.dev:23000}"
-SELF_HOST_ID=$(hostname)
 
 # =============================================================================
 # Data & Directory Setup
@@ -37,8 +31,8 @@ SELF_HOST_ID=$(hostname)
 
 setup_data_directories() {
     echo "Setting up data directories..."
-    sudo mkdir -p /data/n8n /data/ai-maestro /data/repos /data/agents \
-        /data/queue/boswell-hub-manager /data/queue/boswell-app-manager
+    sudo mkdir -p /data/n8n /data/repos /data/agents \
+        /data/dagu/dags /data/dagu/logs
     sudo chown -R agent:agent /data
 
     if [ ! -L /home/agent/.n8n ]; then
@@ -243,75 +237,12 @@ bootstrap_hub_tests() {
 }
 
 # =============================================================================
-# AI Maestro Configuration
+# Dagu Configuration
 # =============================================================================
-
-setup_ai_maestro_data() {
-    mkdir -p /data/ai-maestro/agents /data/ai-maestro/logs /data/ai-maestro/teams
-
-    # Clean stale repo files if a previous deploy cloned the repo into the data dir.
-    # Only config data (agents/, logs/, teams/, *.json) should live here.
-    if [ -f /data/ai-maestro/package.json ]; then
-        echo "Cleaning stale repo files from /data/ai-maestro..."
-        cd /data/ai-maestro
-        find . -maxdepth 1 ! -name '.' ! -name 'agents' ! -name 'logs' ! -name 'teams' \
-            ! -name '*.json' ! -name 'amp' -exec rm -rf {} + 2>/dev/null || true
-    fi
-
-    # Symlink ~/.aimaestro -> /data/ai-maestro for both users.
-    # Force-recreate because AI Maestro may replace the symlink with a real directory.
-    rm -rf /root/.aimaestro
-    ln -s /data/ai-maestro /root/.aimaestro
-    rm -rf /home/agent/.aimaestro
-    ln -s /data/ai-maestro /home/agent/.aimaestro
-}
-
-setup_ai_maestro_hosts() {
-    # Update hosts.json with the current public URL while preserving the
-    # organization fields. A full overwrite clears the org and triggers
-    # AI Maestro's "Welcome / Create New Network" screen on every deploy.
-    python3 -c "
-import json, os
-path = '/data/ai-maestro/hosts.json'
-existing = {}
-if os.path.exists(path):
-    try:
-        with open(path) as f:
-            existing = json.load(f)
-    except Exception:
-        pass
-existing['hosts'] = [{
-    'id': '$SELF_HOST_ID',
-    'name': '$SELF_HOST_ID',
-    'url': '$MAESTRO_PUBLIC_URL',
-    'enabled': True,
-    'description': 'This machine'
-}]
-with open(path, 'w') as f:
-    json.dump(existing, f, indent=2)
-" 2>/dev/null || true
-}
 
 setup_agent_working_directories() {
     mkdir -p /data/agents
     chown -R agent:agent /data/agents
-
-    # Pre-create working directories for all registered agents
-    if [ -f /data/ai-maestro/agents/registry.json ]; then
-        python3 -c "
-import json, os
-try:
-    with open('/data/ai-maestro/agents/registry.json') as f:
-        agents = json.load(f)
-    for agent in agents:
-        wd = agent.get('workingDirectory', '')
-        if wd and wd.startswith('/data/agents/'):
-            os.makedirs(wd, exist_ok=True)
-            os.system(f'chown agent:agent {wd}')
-except Exception:
-    pass
-" 2>/dev/null || true
-    fi
 
     # Directory layout per agent:
     #   /data/agents/<name>/repo/      ← git clone (main branch, spec work, worktree source)
@@ -361,55 +292,6 @@ except Exception:
     chown -R agent:agent /data/agents/
 }
 
-fix_agent_registry() {
-    # Fix agent registry entries on each boot:
-    #   1. Replace stale private Fly.io IPs (http://172.x.x.x) with the public URL
-    #   2. Ensure all agents have --dangerously-skip-permissions in programArgs
-    #      (AI Maestro's wake route appends programArgs to the claude command)
-    #   3. Remove old --permission-mode bypassPermissions (replaced by above)
-    #   4. Reset workingDirectory to default repo/ path on boot
-    #      (dispatcher PATCHes the correct dir before each wake)
-    if [ -f /data/ai-maestro/agents/registry.json ]; then
-        python3 -c "
-import json, sys
-try:
-    with open('/data/ai-maestro/agents/registry.json') as f:
-        agents = json.load(f)
-    changed = False
-    for agent in agents:
-        # Fix stale hostUrl
-        if agent.get('hostUrl', '').startswith('http://172.'):
-            agent['hostUrl'] = '$MAESTRO_PUBLIC_URL'
-            changed = True
-        args = agent.get('programArgs', '')
-        # Remove old --permission-mode bypassPermissions flag
-        if '--permission-mode bypassPermissions' in args:
-            args = args.replace('--permission-mode bypassPermissions', '').strip()
-            agent['programArgs'] = args
-            changed = True
-        # Ensure --dangerously-skip-permissions flag is present
-        if '--dangerously-skip-permissions' not in args:
-            agent['programArgs'] = (args + ' --dangerously-skip-permissions').strip()
-            changed = True
-        # Reset workingDirectory to default repo/ path on boot
-        # (dispatcher PATCHes the correct dir before each wake)
-        wd = agent.get('workingDirectory', '')
-        name = agent.get('name', '')
-        if name and wd.startswith('/data/agents/'):
-            default_wd = f'/data/agents/{name}/repo'
-            if wd != default_wd:
-                agent['workingDirectory'] = default_wd
-                changed = True
-    if changed:
-        with open('/data/ai-maestro/agents/registry.json', 'w') as f:
-            json.dump(agents, f, indent=2)
-        print('Updated agent registry (hostUrl + programArgs + workingDirectory)')
-except Exception as e:
-    print(f'Warning: could not fix agent registry: {e}', file=sys.stderr)
-" 2>/dev/null || true
-    fi
-}
-
 # =============================================================================
 # Secrets & Environment
 # =============================================================================
@@ -421,6 +303,7 @@ setup_agent_secrets() {
     cat > /home/agent/.zshenv <<EOF
 export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
 export GH_TOKEN="$GH_TOKEN"
+export BOSWELL_HUB_MASTER_KEY="$BOSWELL_HUB_MASTER_KEY"
 
 # asdf version manager (Ruby, Node.js, etc.)
 # PATH-only setup avoids sourcing asdf.sh which prints a noisy v0.16 migration notice.
@@ -606,21 +489,29 @@ start_n8n() {
     fi
 }
 
-start_ai_maestro() {
-    # AI Maestro runs as the 'agent' user so that tmux sessions it creates
-    # are owned by a non-root user. This is required because Claude Code's
-    # --dangerously-skip-permissions is blocked for root/sudo.
-    # The agent user's .zshenv provides CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN,
-    # which are inherited by tmux sessions and Claude Code.
-    echo "Starting AI Maestro on port 23001 (as agent user)..."
+start_dagu() {
+    # Dagu runs as the 'agent' user so claude -p subprocesses inherit
+    # the agent's environment (tokens, asdf paths, jemalloc preload).
+    echo "Starting Dagu on port 8080 (as agent user, localhost only)..."
+
+    # Copy baked-in DAGs to persistent volume (don't overwrite user edits)
+    cp -n /opt/dagu/dags/*.yaml /data/dagu/dags/ 2>/dev/null || true
+    # But always update the agent-dispatch DAG to latest version
+    cp /opt/dagu/dags/agent-dispatch.yaml /data/dagu/dags/agent-dispatch.yaml 2>/dev/null || true
+
+    # Copy config (always overwrite with latest from image)
+    cp /opt/dagu/config.yaml /data/dagu/config.yaml
+
+    chown -R agent:agent /data/dagu
+
     (
         while true; do
-            su - agent -c "cd /opt/ai-maestro && NODE_ENV=production PORT=23001 node server.mjs" 2>&1 | tee -a /data/ai-maestro/logs/maestro.log
-            echo "AI Maestro exited ($(date)), restarting in 5s..."
+            su - agent -c "dagu start-all --config /data/dagu/config.yaml" 2>&1 | tee -a /data/dagu/logs/dagu.log
+            echo "Dagu exited ($(date)), restarting in 5s..."
             sleep 5
         done
     ) &
-    AI_MAESTRO_PID=$!
+    DAGU_PID=$!
 }
 
 start_auth_proxy() {
@@ -662,7 +553,7 @@ start_auth_proxy_github_oauth() {
 :23000 {
     @internal remote_ip 127.0.0.1 ::1 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16 fd00::/8
     handle @internal {
-        reverse_proxy 127.0.0.1:23001
+        reverse_proxy 127.0.0.1:8080
     }
     handle {
         handle /oauth2/* {
@@ -673,7 +564,7 @@ start_auth_proxy_github_oauth() {
             header_up X-Forwarded-Uri {uri}
             copy_headers X-Auth-Request-User X-Auth-Request-Email
         }
-        reverse_proxy 127.0.0.1:23001
+        reverse_proxy 127.0.0.1:8080
     }
 }
 CADDYEOF
@@ -690,13 +581,13 @@ start_auth_proxy_basic_auth() {
 :23000 {
     @internal remote_ip 127.0.0.1 ::1 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16 fd00::/8
     handle @internal {
-        reverse_proxy 127.0.0.1:23001
+        reverse_proxy 127.0.0.1:8080
     }
     handle {
         basic_auth {
             $CADDY_AUTH_USER $CADDY_HASH
         }
-        reverse_proxy 127.0.0.1:23001
+        reverse_proxy 127.0.0.1:8080
     }
 }
 CADDYEOF
@@ -705,12 +596,12 @@ CADDYEOF
 }
 
 start_auth_proxy_none() {
-    echo "WARNING: No auth configured for AI Maestro!"
+    echo "WARNING: No auth configured for Dagu dashboard!"
     echo "Set CADDY_AUTH_PASS or GITHUB_OAUTH_CLIENT_ID as Fly secrets."
 
     cat > /etc/caddy/Caddyfile <<'CADDYEOF'
 :23000 {
-    reverse_proxy 127.0.0.1:23001
+    reverse_proxy 127.0.0.1:8080
 }
 CADDYEOF
 
@@ -731,10 +622,7 @@ main() {
     setup_claude_config
     setup_claude_plugins
     setup_asdf
-    setup_ai_maestro_data
-    setup_ai_maestro_hosts
     setup_agent_working_directories
-    fix_agent_registry
 
     # Phase 2: Environment and secrets
     setup_agent_secrets
@@ -747,7 +635,7 @@ main() {
     # Phase 4: Start application services
     sync_workflows
     start_n8n
-    start_ai_maestro
+    start_dagu
     start_auth_proxy
 
     # Phase 5: Background tasks (non-blocking)
@@ -763,7 +651,7 @@ main() {
     echo "========================================="
     echo "All services started:"
     echo "  - n8n (PID: $N8N_PID) on port 5678"
-    echo "  - AI Maestro (PID: $AI_MAESTRO_PID) on port 23001 (as agent user)"
+    echo "  - Dagu (PID: $DAGU_PID) on port 8080 (as agent user, localhost only)"
     echo "  - Caddy auth proxy (PID: $CADDY_PID) on port 23000 ($AUTH_MODE)"
     echo "  - PostgreSQL on /var/run/postgresql"
     echo "  - Redis on port 6379"

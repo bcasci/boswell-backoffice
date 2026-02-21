@@ -5,7 +5,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system packages (python3 needed for native module compilation)
 RUN apt-get update && apt-get install -y \
     git \
-    tmux \
     zsh \
     curl \
     wget \
@@ -57,7 +56,7 @@ RUN wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/c
     && dpkg -i cloudflared-linux-amd64.deb \
     && rm cloudflared-linux-amd64.deb
 
-# Install Caddy (auth reverse proxy for AI Maestro dashboard)
+# Install Caddy (auth reverse proxy for Dagu dashboard)
 RUN apt-get update \
     && apt-get install -y debian-keyring debian-archive-keyring apt-transport-https \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
@@ -72,25 +71,16 @@ RUN wget -q https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v7.7.
     && mv oauth2-proxy-v7.7.1.linux-amd64/oauth2-proxy /usr/local/bin/ \
     && rm -rf oauth2-proxy-*
 
-# Clone and build AI Maestro (baked into image to avoid runtime network timeouts)
-# Note: touch .help-build-success so the prebuild help-index step can fail gracefully
-# (it requires CUDA/GPU for ONNX runtime which isn't available in the Docker builder)
-# Post-build cleanup removes ~1GB of unnecessary files to stay under Fly.io 8GB rootfs limit
-RUN git clone --depth 1 https://github.com/23blocks-OS/ai-maestro.git /opt/ai-maestro \
-    && cd /opt/ai-maestro \
-    && yarn install --network-timeout 300000 \
-    && mkdir -p data && touch data/.help-build-success \
-    && yarn build \
-    # --- Post-build size reduction ---
-    # Remove ONNX runtime native binaries (~700MB) - unusable without CUDA GPU
-    && rm -rf node_modules/onnxruntime-node/bin \
-    # Remove dev dependencies from node_modules
-    && npm prune --production 2>/dev/null || true \
-    # Remove build caches and unnecessary files
-    && rm -rf .next/cache .next/types node_modules/.cache \
-    && rm -rf .git tests .github infrastructure docs \
-    && yarn cache clean 2>/dev/null || true \
-    && rm -rf /tmp/* /root/.npm /root/.cache
+# Install Dagu (workflow executor — single Go binary, ~30MB)
+# Replaces AI Maestro for agent orchestration. Binds to localhost only.
+# CVE GHSA-6qr9-g2xw-cw92 mitigated by localhost binding + Caddy auth proxy.
+COPY versions.json /tmp/versions.json
+RUN DAGU_VERSION=$(jq -r '.dagu' /tmp/versions.json) \
+    && echo "Installing dagu@${DAGU_VERSION}" \
+    && wget -q "https://github.com/dagu-org/dagu/releases/download/v${DAGU_VERSION}/dagu_${DAGU_VERSION}_linux_amd64.tar.gz" \
+    && tar xzf "dagu_${DAGU_VERSION}_linux_amd64.tar.gz" -C /usr/local/bin dagu \
+    && rm "dagu_${DAGU_VERSION}_linux_amd64.tar.gz" \
+    && chmod +x /usr/local/bin/dagu
 
 # Install asdf version manager (plugins + installs live on /data/asdf persistent volume)
 RUN git clone --depth 1 https://github.com/asdf-vm/asdf.git /opt/asdf --branch v0.16.7
@@ -113,9 +103,8 @@ RUN mkdir -p /run/sshd \
     && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Create data directories (persistent volume mounted at /data)
-RUN mkdir -p /data/n8n /data/ai-maestro /data/repos /data/worktrees /data/asdf \
+RUN mkdir -p /data/n8n /data/repos /data/worktrees /data/asdf /data/dagu/dags /data/dagu/logs \
     && chown -R agent:agent /data \
-    && chown -R agent:agent /opt/ai-maestro \
     && chown -R agent:agent /opt/asdf
 
 # Switch to agent user
@@ -125,10 +114,11 @@ WORKDIR /home/agent
 # Symlink n8n data directory
 RUN ln -s /data/n8n /home/agent/.n8n
 
-# Copy scripts, workflows, and entrypoint
+# Copy scripts, workflows, Dagu config, and entrypoint
 COPY --chown=agent:agent scripts/build-faq.sh /opt/scripts/build-faq.sh
 RUN chmod +x /opt/scripts/build-faq.sh
 COPY --chown=agent:agent workflows/ /opt/workflows/
+COPY --chown=agent:agent dagu/ /opt/dagu/
 COPY --chown=agent:agent entrypoint.sh /home/agent/entrypoint.sh
 RUN chmod +x /home/agent/entrypoint.sh
 

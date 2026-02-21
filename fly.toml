@@ -19,7 +19,7 @@ primary_region = 'ewr'
   min_machines_running = 1
   processes = ['app']
 
-# AI Maestro dashboard on port 23000
+# Dagu dashboard on port 23000 (Caddy auth proxy -> Dagu on localhost:8080)
 # Note: Requires dedicated IPv4 for external access on non-standard ports.
 # Allocate with: fly ips allocate-v4 -a backoffice-automation
 # Access via: https://backoffice-automation.fly.dev:23000

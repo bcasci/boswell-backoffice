@@ -1,0 +1,27 @@
+# Dagu configuration — baked into Docker image, data on persistent volume.
+# CVE GHSA-6qr9-g2xw-cw92 mitigated: localhost binding + Caddy auth proxy.
+host: "127.0.0.1"
+port: 8080
+
+paths:
+  dags_dir: "/data/dagu/dags"
+  log_dir: "/data/dagu/logs"
+  data_dir: "/data/dagu"
+
+# No auth on internal port (localhost only). Caddy handles external auth on :23000.
+# This matches how AI Maestro worked: no auth on 23001, Caddy auth on 23000.
+auth:
+  mode: "none"
+
+# Concurrency: max 1 claude -p at a time (VPS CPU/RAM constraint).
+# The "agent-work" queue serializes all agent dispatch jobs.
+# To allow 2 concurrent agents, change max_concurrency to 2.
+queues:
+  enabled: true
+  config:
+    - name: "agent-work"
+      max_concurrency: 1
+
+default_shell: "/bin/bash"
+tz: "America/New_York"
+hist_retention_days: 30

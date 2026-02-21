@@ -1,5 +1,6 @@
 {
   "claude-code": "2.1.45",
   "n8n": "latest",
-  "node": "22"
+  "node": "22",
+  "dagu": "1.30.3"
 }
