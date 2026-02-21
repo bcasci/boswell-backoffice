@@ -560,7 +560,7 @@ start_auth_proxy_github_oauth() {
 
     cat > /etc/caddy/Caddyfile <<'CADDYEOF'
 :23000 {
-    @internal remote_ip 127.0.0.1 ::1 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16 fd00::/8
+    @internal remote_ip 127.0.0.1 ::1
     handle @internal {
         reverse_proxy 127.0.0.1:8080
     }
@@ -588,7 +588,7 @@ start_auth_proxy_basic_auth() {
 
     cat > /etc/caddy/Caddyfile <<CADDYEOF
 :23000 {
-    @internal remote_ip 127.0.0.1 ::1 172.16.0.0/12 10.0.0.0/8 192.168.0.0/16 fd00::/8
+    @internal remote_ip 127.0.0.1 ::1
     handle @internal {
         reverse_proxy 127.0.0.1:8080
     }
