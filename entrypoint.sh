@@ -4,12 +4,14 @@ set -e
 # =============================================================================
 # Backoffice Automation Entrypoint
 # =============================================================================
-# Starts n8n, AI Maestro, and Caddy auth proxy.
+# Starts n8n, AI Maestro, Caddy auth proxy, PostgreSQL, and Redis.
 #
 # Services:
 #   - n8n          → port 5678  (workflow automation)
 #   - AI Maestro   → port 23001 (internal, agent orchestration dashboard)
 #   - Caddy        → port 23000 (auth proxy for AI Maestro)
+#   - PostgreSQL   → socket    (boswell-hub database)
+#   - Redis        → port 6379 (Sidekiq job queue)
 #
 # AI Maestro runs as the 'agent' user (not root). This is critical because:
 #   - AI Maestro creates tmux sessions that inherit the calling user
@@ -23,6 +25,7 @@ set -e
 #   /data/claude       - Claude Code auth and settings
 #   /data/agents       - Agent working directories
 #   /data/repos        - Cloned repositories
+#   /data/postgres     - PostgreSQL data directory
 # =============================================================================
 
 MAESTRO_PUBLIC_URL="${MAESTRO_PUBLIC_URL:-https://backoffice-automation.fly.dev:23000}"
@@ -185,6 +188,58 @@ bootstrap_ruby_for_repos() {
     done
 
     echo "RUBY: Background bootstrap complete"
+}
+
+bootstrap_hub_tests() {
+    # Prepare boswell-hub for running tests on the VPS.
+    # Patches database.yml (macOS socket path → Linux) and runs db:prepare.
+    # This is the ONLY source file modification — everything else is env config.
+    local hub_dir="/data/agents/boswell-hub-manager/repo"
+
+    if [ ! -d "$hub_dir/.git" ]; then
+        echo "HUB-BOOTSTRAP: repo not cloned yet, skipping"
+        return 0
+    fi
+
+    # Write Rails master key to config/master.key (per-repo, not global env).
+    # This file is in .gitignore — it's a per-machine credential, not a source patch.
+    # Uses BOSWELL_HUB_MASTER_KEY (qualified name) so each app has its own secret.
+    # Fallback to RAILS_MASTER_KEY for backward compat during migration.
+    local hub_key="${BOSWELL_HUB_MASTER_KEY:-$RAILS_MASTER_KEY}"
+    if [ -n "$hub_key" ] && [ ! -f "$hub_dir/config/master.key" ]; then
+        echo -n "$hub_key" > "$hub_dir/config/master.key"
+        chown agent:agent "$hub_dir/config/master.key"
+        chmod 600 "$hub_dir/config/master.key"
+        echo "HUB-BOOTSTRAP: Wrote config/master.key"
+    fi
+
+    # Enable dev caching (same as running 'rails dev:cache' locally).
+    # Required because development.rb checks for this before loading auth0 session config.
+    # This file is in .gitignore — it's a per-machine toggle, not a source patch.
+    mkdir -p "$hub_dir/tmp"
+    touch "$hub_dir/tmp/caching-dev.txt"
+
+    # Patch database.yml: replace macOS socket path with Linux default
+    local db_yml="$hub_dir/config/database.yml"
+    if [ -f "$db_yml" ] && grep -q '/Users/brandoncasci/.asdf/installs/postgres/12.1/sockets' "$db_yml"; then
+        echo "HUB-BOOTSTRAP: Patching database.yml socket path..."
+        sed -i 's|/Users/brandoncasci/.asdf/installs/postgres/12.1/sockets|/var/run/postgresql|g' "$db_yml"
+        echo "HUB-BOOTSTRAP: database.yml patched"
+    else
+        echo "HUB-BOOTSTRAP: database.yml already patched or not present, skipping"
+    fi
+
+    # Prepare development database (Rails default env)
+    echo "HUB-BOOTSTRAP: Running db:prepare (development)..."
+    su - agent -c "cd $hub_dir && bundle exec rails db:prepare" 2>&1 | \
+        while IFS= read -r line; do echo "HUB-BOOTSTRAP: $line"; done
+
+    # Prepare test database
+    echo "HUB-BOOTSTRAP: Running db:prepare (test)..."
+    su - agent -c "cd $hub_dir && RAILS_ENV=test bundle exec rails db:prepare" 2>&1 | \
+        while IFS= read -r line; do echo "HUB-BOOTSTRAP: $line"; done
+
+    echo "HUB-BOOTSTRAP: Bootstrap complete"
 }
 
 # =============================================================================
@@ -387,6 +442,58 @@ verify_secrets() {
 }
 
 # =============================================================================
+# PostgreSQL & Redis
+# =============================================================================
+
+setup_postgres() {
+    echo "Setting up PostgreSQL..."
+    local pgdata="/data/postgres"
+
+    # Initialize data directory on first boot
+    if [ ! -f "$pgdata/PG_VERSION" ]; then
+        echo "POSTGRES: Initializing data directory at $pgdata..."
+        mkdir -p "$pgdata"
+        chown postgres:postgres "$pgdata"
+        su -s /bin/bash postgres -c "/usr/lib/postgresql/*/bin/initdb -D $pgdata" 2>&1
+        echo "POSTGRES: Data directory initialized"
+    else
+        # Ensure ownership is correct (may have been created by root in a previous version)
+        chown -R postgres:postgres "$pgdata"
+        echo "POSTGRES: Data directory already exists, skipping initdb"
+    fi
+
+    # Start PostgreSQL
+    echo "POSTGRES: Starting server..."
+    su -s /bin/bash postgres -c "/usr/lib/postgresql/*/bin/pg_ctl -D $pgdata -l /data/postgres/server.log start" 2>&1
+
+    # Wait for PostgreSQL to be ready
+    local retries=0
+    while ! pg_isready -q 2>/dev/null; do
+        retries=$((retries + 1))
+        if [ $retries -gt 30 ]; then
+            echo "POSTGRES: ERROR — server did not start within 30 seconds"
+            return 1
+        fi
+        sleep 1
+    done
+    echo "POSTGRES: Server is ready"
+
+    # Create agent superuser role if not exists
+    if ! su -s /bin/bash postgres -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='agent'\"" 2>/dev/null | grep -q 1; then
+        su -s /bin/bash postgres -c "createuser -s agent" 2>&1
+        echo "POSTGRES: Created 'agent' superuser role"
+    else
+        echo "POSTGRES: 'agent' role already exists"
+    fi
+}
+
+start_redis() {
+    echo "Starting Redis..."
+    redis-server --daemonize yes 2>&1
+    echo "OK: Redis started"
+}
+
+# =============================================================================
 # Service Launchers
 # =============================================================================
 
@@ -566,13 +673,23 @@ main() {
     setup_agent_secrets
     verify_secrets
 
-    # Phase 3: Start services
+    # Phase 3: Start data services (needed before app bootstrap)
+    setup_postgres
+    start_redis
+
+    # Phase 4: Start application services
     start_n8n
     start_ai_maestro
     start_auth_proxy
 
-    # Phase 4: Background tasks (non-blocking)
-    bootstrap_ruby_for_repos &
+    # Phase 5: Background tasks (non-blocking)
+    # Ruby bootstrap runs first, then hub test bootstrap chains after it.
+    # set +e so failures in bootstrap don't kill the container (set -e inherited by subshells).
+    (
+        set +e
+        bootstrap_ruby_for_repos
+        bootstrap_hub_tests
+    ) &
 
     # Summary
     echo "========================================="
@@ -580,6 +697,8 @@ main() {
     echo "  - n8n (PID: $N8N_PID) on port 5678"
     echo "  - AI Maestro (PID: $AI_MAESTRO_PID) on port 23001 (as agent user)"
     echo "  - Caddy auth proxy (PID: $CADDY_PID) on port 23000 ($AUTH_MODE)"
+    echo "  - PostgreSQL on /var/run/postgresql"
+    echo "  - Redis on port 6379"
     echo "========================================="
 
     # Wait on n8n as the primary process (container exits when this dies)

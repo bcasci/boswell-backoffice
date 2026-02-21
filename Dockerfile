@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y \
     libgdbm-dev libncurses5-dev autoconf bison libsqlite3-dev \
     # Rails app runtime dependencies
     libvips-dev libjemalloc2 pkg-config libpq-dev \
+    # Services for boswell-hub (PostgreSQL for ActiveRecord, Redis for Sidekiq)
+    postgresql redis-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 22.x
