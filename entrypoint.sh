@@ -367,7 +367,8 @@ fix_agent_registry() {
     #   2. Ensure all agents have --dangerously-skip-permissions in programArgs
     #      (AI Maestro's wake route appends programArgs to the claude command)
     #   3. Remove old --permission-mode bypassPermissions (replaced by above)
-    #   4. Fix workingDirectory to point to repo/ subdirectory (worktree layout)
+    #   4. Reset workingDirectory to default repo/ path on boot
+    #      (dispatcher PATCHes the correct dir before each wake)
     if [ -f /data/ai-maestro/agents/registry.json ]; then
         python3 -c "
 import json, sys
@@ -390,11 +391,15 @@ try:
         if '--dangerously-skip-permissions' not in args:
             agent['programArgs'] = (args + ' --dangerously-skip-permissions').strip()
             changed = True
-        # Fix workingDirectory to point to repo/ subdirectory
+        # Reset workingDirectory to default repo/ path on boot
+        # (dispatcher PATCHes the correct dir before each wake)
         wd = agent.get('workingDirectory', '')
-        if wd.startswith('/data/agents/') and not wd.endswith('/repo'):
-            agent['workingDirectory'] = wd.rstrip('/') + '/repo'
-            changed = True
+        name = agent.get('name', '')
+        if name and wd.startswith('/data/agents/'):
+            default_wd = f'/data/agents/{name}/repo'
+            if wd != default_wd:
+                agent['workingDirectory'] = default_wd
+                changed = True
     if changed:
         with open('/data/ai-maestro/agents/registry.json', 'w') as f:
             json.dump(agents, f, indent=2)
@@ -496,6 +501,68 @@ start_redis() {
 # =============================================================================
 # Service Launchers
 # =============================================================================
+
+sync_workflows() {
+    # Sync baked-in workflow JSONs with n8n database.
+    # Runs BEFORE n8n starts so changes are picked up immediately.
+    # Compares nodes content by hash; updates both workflow_entity and workflow_history.
+    if [ ! -f /data/n8n/.n8n/database.sqlite ] || [ ! -d /opt/workflows ]; then
+        return
+    fi
+    echo "Syncing workflows from Docker image..."
+    python3 -c "
+import sqlite3, json, hashlib, os, glob
+
+DB = '/data/n8n/.n8n/database.sqlite'
+WF_DIR = '/opt/workflows'
+
+conn = sqlite3.connect(DB)
+cur = conn.cursor()
+updated = 0
+
+for wf_path in glob.glob(os.path.join(WF_DIR, '*.json')):
+    with open(wf_path) as f:
+        baked = json.load(f)
+    baked_nodes = json.dumps(baked.get('nodes', []), sort_keys=True)
+    baked_hash = hashlib.sha256(baked_nodes.encode()).hexdigest()
+    wf_name = baked.get('name', '')
+    if not wf_name:
+        continue
+
+    cur.execute('SELECT id, nodes FROM workflow_entity WHERE name = ?', (wf_name,))
+    row = cur.fetchone()
+    if not row:
+        continue
+    wf_id, db_nodes_json = row
+    db_hash = hashlib.sha256(
+        json.dumps(json.loads(db_nodes_json), sort_keys=True).encode()
+    ).hexdigest()
+
+    if baked_hash == db_hash:
+        continue
+
+    # Update workflow_entity
+    new_nodes = json.dumps(baked.get('nodes', []))
+    new_connections = json.dumps(baked.get('connections', {}))
+    cur.execute('UPDATE workflow_entity SET nodes = ?, connections = ? WHERE id = ?',
+                (new_nodes, new_connections, wf_id))
+
+    # Update ALL workflow_history entries
+    cur.execute('SELECT versionId FROM workflow_history WHERE workflowId = ?', (wf_id,))
+    for (vid,) in cur.fetchall():
+        cur.execute('UPDATE workflow_history SET nodes = ?, connections = ? WHERE versionId = ?',
+                    (new_nodes, new_connections, vid))
+    updated += 1
+    print(f'  Synced: {wf_name}')
+
+conn.commit()
+conn.close()
+if updated:
+    print(f'OK: Synced {updated} workflow(s) from Docker image')
+else:
+    print('OK: All workflows up to date')
+" 2>&1 || echo "Warning: workflow sync failed (non-fatal)"
+}
 
 start_n8n() {
     echo "Starting n8n on port 5678..."
@@ -678,6 +745,7 @@ main() {
     start_redis
 
     # Phase 4: Start application services
+    sync_workflows
     start_n8n
     start_ai_maestro
     start_auth_proxy
