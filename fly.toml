@@ -38,5 +38,5 @@ primary_region = 'ewr'
   N8N_RESTRICT_FILE_ACCESS_TO = '/tmp;/data'
 
 [[vm]]
-  size = 'performance-4x'
+  size = 'performance-2x'
   memory = '8gb'

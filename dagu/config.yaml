@@ -13,14 +13,14 @@ paths:
 auth:
   mode: "none"
 
-# Concurrency: allow parallel agent work on performance-4x/8GB.
+# Concurrency: allow parallel agent work on performance-2x/8GB.
 # Each agent job needs ~600MB RAM + 1 CPU core for tests.
-# With 4 dedicated cores and 8GB, 3 concurrent jobs is comfortable.
+# With 2 dedicated cores and 8GB, 2 concurrent jobs is comfortable.
 queues:
   enabled: true
   config:
     - name: "agent-work"
-      max_concurrency: 3
+      max_concurrency: 2
 
 default_shell: "/bin/bash"
 tz: "America/New_York"
