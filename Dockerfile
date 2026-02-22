@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     jq \
     unzip \
+    tini \
     # Ruby build dependencies (for compiling Ruby via asdf)
     libssl-dev libreadline-dev zlib1g-dev libyaml-dev libffi-dev \
     libgdbm-dev libncurses5-dev autoconf bison libsqlite3-dev \
@@ -127,4 +128,6 @@ USER root
 
 EXPOSE 5678 23000 22
 
-ENTRYPOINT ["/home/agent/entrypoint.sh"]
+# tini as PID 1: reaps zombie processes (e.g. Rails parallel test workers)
+# and forwards signals properly. Without this, bash as PID 1 leaves zombies.
+ENTRYPOINT ["/usr/bin/tini", "--", "/home/agent/entrypoint.sh"]
