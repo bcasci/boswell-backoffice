@@ -13,14 +13,14 @@ paths:
 auth:
   mode: "none"
 
-# Concurrency: max 1 claude -p at a time (VPS CPU/RAM constraint).
-# The "agent-work" queue serializes all agent dispatch jobs.
-# To allow 2 concurrent agents, change max_concurrency to 2.
+# Concurrency: allow parallel agent work on performance-4x/8GB.
+# Each agent job needs ~600MB RAM + 1 CPU core for tests.
+# With 4 dedicated cores and 8GB, 3 concurrent jobs is comfortable.
 queues:
   enabled: true
   config:
     - name: "agent-work"
-      max_concurrency: 1
+      max_concurrency: 3
 
 default_shell: "/bin/bash"
 tz: "America/New_York"
