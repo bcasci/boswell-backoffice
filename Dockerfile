@@ -83,6 +83,13 @@ RUN DAGU_VERSION=$(jq -r '.dagu' /tmp/versions.json) \
     && rm "dagu_${DAGU_VERSION}_linux_amd64.tar.gz" \
     && chmod +x /usr/local/bin/dagu
 
+# Install Google Chrome (headless, for Cuprite/Ferrum system tests in boswell-hub)
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install asdf version manager (plugins + installs live on /data/asdf persistent volume)
 RUN git clone --depth 1 https://github.com/asdf-vm/asdf.git /opt/asdf --branch v0.16.7
 

@@ -60,6 +60,11 @@ GUARDRAILS
     touch "$WT_PATH/tmp/caching-dev.txt"
   fi
 
+  # Install dependencies (node_modules is gitignored, so fresh clones need this)
+  cd "$WT_PATH"
+  bundle install --quiet 2>&1
+  yarn install --frozen-lockfile --ignore-engines 2>&1
+
   chown -R agent:agent "$WT_PATH"
   WORK_DIR="$WT_PATH"
 
