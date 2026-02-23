@@ -213,16 +213,6 @@ bootstrap_hub_tests() {
     mkdir -p "$hub_dir/tmp"
     touch "$hub_dir/tmp/caching-dev.txt"
 
-    # Patch database.yml: replace macOS socket path with Linux default
-    local db_yml="$hub_dir/config/database.yml"
-    if [ -f "$db_yml" ] && grep -q '/Users/brandoncasci/.asdf/installs/postgres/12.1/sockets' "$db_yml"; then
-        echo "HUB-BOOTSTRAP: Patching database.yml socket path..."
-        sed -i 's|/Users/brandoncasci/.asdf/installs/postgres/12.1/sockets|/var/run/postgresql|g' "$db_yml"
-        echo "HUB-BOOTSTRAP: database.yml patched"
-    else
-        echo "HUB-BOOTSTRAP: database.yml already patched or not present, skipping"
-    fi
-
     # Prepare development database (Rails default env)
     echo "HUB-BOOTSTRAP: Running db:prepare (development)..."
     su - agent -c "cd $hub_dir && bundle exec rails db:prepare" 2>&1 | \
@@ -317,6 +307,10 @@ export PATH="\$ASDF_DATA_DIR/shims:\$ASDF_DIR/bin:\$PATH"
 
 # Use jemalloc for Ruby (better memory usage on constrained VPS)
 export LD_PRELOAD=libjemalloc.so.2
+
+# boswell-hub database.yml reads this env var for the PostgreSQL socket path.
+# Unified across dev (macOS) and server (Linux) via the app's database.yml.
+export BOSWELL_HUB_DATABASE_HOST="/var/run/postgresql"
 EOF
     chown agent:agent /home/agent/.zshenv
     chmod 600 /home/agent/.zshenv

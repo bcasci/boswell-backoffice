@@ -20,6 +20,7 @@ env:
   ASDF_DATA_DIR: "/data/asdf"
   PATH: "/data/asdf/shims:/opt/asdf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
   LD_PRELOAD: "libjemalloc.so.2"
+  BOSWELL_HUB_DATABASE_HOST: "/var/run/postgresql"
 
 timeoutSec: 7200
 

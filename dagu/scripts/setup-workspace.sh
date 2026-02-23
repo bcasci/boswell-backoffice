@@ -58,7 +58,6 @@ GUARDRAILS
     chmod 600 "$WT_PATH/config/master.key"
     mkdir -p "$WT_PATH/tmp"
     touch "$WT_PATH/tmp/caching-dev.txt"
-    sed -i 's|/Users/brandoncasci/.asdf/installs/postgres/12.1/sockets|/var/run/postgresql|g' "$WT_PATH/config/database.yml" 2>/dev/null || true
   fi
 
   chown -R agent:agent "$WT_PATH"
